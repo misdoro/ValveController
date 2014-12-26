@@ -5,6 +5,7 @@
 #define     LED1                  BIT0
 #define     LED_DIR               P1DIR
 #define     LED_OUT               P1OUT
+#define  DEBUG  true
 
 #define  MAXON	3000
 #define  TXBUF_SIZE 64//Must be a power of 2
@@ -53,24 +54,14 @@ int main(void){
 	eint();
 	
 	ontime=1000;
-	while(1){
-		//Led blink loop
-		//P1OUT &= ~BIT6;//Turn off green led
+	while(1){//Infinite loop, to replace by timer later.
+		//Red&Green Led blink
+		P1OUT ^= BIT0+BIT6;
 		
-		if (ontime<MAXON){
-			ontime++;
-		}else{
-			ontime=MAXON;
+		for (i=1;i<MAXON;i++){
+			//Software delay
 		}
-		for (i=0;i<ontime;i++){
-			P1OUT |= BIT0;//Turn on red led
-			
-		}
-		
-		for (i=ontime;i<MAXON;i++){
-			P1OUT &= ~BIT0;//Turn off red led
-		}
-		ADCStart();
+		ADCStart();//Initiate ADC conversion
 	}
 	
 	
@@ -82,8 +73,8 @@ void ADCStart(void){
 
 void ConfigureAdc(void)
 {
-	/* Configure ADC Temp Sensor Channel */
-	ADC10CTL1 = INCH_5 + ADC10DIV_3;         // Temp Sensor ADC10CLK/4
+	/* Configure ADC */
+	ADC10CTL1 = INCH_5 + ADC10DIV_3;//Start with input channel 5
 	ADC10CTL0 = SREF_3 + ADC10SHT_3  + ADC10ON + ADC10IE;
 	//SREF3=buff_ext_vref+&vref-=GND
 	//ADC10sht_3 = longest retention time
@@ -91,33 +82,27 @@ void ConfigureAdc(void)
 	//ADC10ON to enable ADC
 	//ADC10IE to enable interrupts
 	ADC10AE0 |= BIT5+BIT7;//A5 and A7 enabled as analog inputs
-	ADCStart();
 }
 
 
 
-void ConfigurePeripherial(void){
-	P1OUT &= ~(BIT0+BIT6);
-	P1DIR =0;//ALL P1 as inputs
+void ConfigurePeripherial(void){//Configure ports and pins
+
+	P1OUT = BIT3+BIT6;//BIT6 for green LED, bit3 for button	
+	P1DIR = (BIT0+BIT6);//LED pins on P1 as outputs
+	P1REN=BIT3;
+	P1SEL = BIT1 + BIT2;//Enable UART on port 1
+	P1SEL2 = BIT1 + BIT2;//Enable UART on port 1
 	
-	P1DIR |= (BIT0+BIT6);//LED pins on P1 as outputs
+	P2DIR=(BIT0+BIT1+BIT3);//P2.0, P2.1, P2.3 as OUT
 	
-	P1REN=0;
-	
-	P2DIR=0;
-	P2DIR|=(BIT0+BIT1+BIT2+BIT3);//P2.0...P2.3 as OUT
-	
-	P2REN=0;
-	P2REN|=(BIT4+BIT5);//Enable pull R on pin4&pin5
-	P2OUT=0;
-	P2OUT|=(BIT4+BIT5);//Pull up switch inputs
+	P2REN=(BIT4+BIT5);//Enable pull R on pin4&pin5
+	P2OUT=(BIT4+BIT5);//Pull switch inputs to high
+	P2OUT|=BIT1;
 	
 	P2SEL=0;
 	P2SEL2=0;
 	
-	
-	P1SEL = BIT1 + BIT2;//Enable UART on port 1
-	P1SEL2 = BIT1 + BIT2;//Enable UART on port 1
 	
 	UCA0CTL1 |= UCSSEL_2;
 	
@@ -128,7 +113,7 @@ void ConfigurePeripherial(void){
 	
 	UCA0CTL1 &= ~UCSWRST;
 	
-	IE2 |= UCA0RXIE+UCA0TXIE;                                 // Enable USCI_A0 RX interrupt
+	IE2 |= UCA0RXIE+UCA0TXIE;// Enable USCI_A0 RX interrupt
 };
 
 interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){	
