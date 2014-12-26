@@ -2,14 +2,15 @@
 #include "signal.h"
 #include "printf.c"
 
-#define     LED1                  BIT0
-#define     LED_DIR               P1DIR
-#define     LED_OUT               P1OUT
+#define  LED1                  BIT0
+#define  LED_DIR               P1DIR
+#define  LED_OUT               P1OUT
 #define  DEBUG  true
+#define  EASTER true
 
 #define  MAXON	3000
 #define  TXBUF_SIZE 64//Must be a power of 2
-#define TXBUF_MASK TXBUF_SIZE-1
+#define  TXBUF_MASK TXBUF_SIZE-1
 
 unsigned long i,ii;
 volatile char flag = 0;
@@ -90,7 +91,7 @@ void ConfigurePeripherial(void){//Configure ports and pins
 
 	P1OUT = BIT3+BIT6;//BIT6 for green LED, bit3 for button	
 	P1DIR = (BIT0+BIT6);//LED pins on P1 as outputs
-	P1REN=BIT3;
+	P1REN=BIT3;//Pull up pin3 for the button
 	P1SEL = BIT1 + BIT2;//Enable UART on port 1
 	P1SEL2 = BIT1 + BIT2;//Enable UART on port 1
 	
@@ -118,7 +119,8 @@ void ConfigurePeripherial(void){//Configure ports and pins
 
 interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){	
 	if (IFG2&UCA0RXIFG){//check interrupt flag
-		readbyte=UCA0RXBUF;
+		readbyte=UCA0RXBUF;//Clear interrupt by reading the byte
+		if (txlen>0)return;//Discard command if we are still sending data
 		if (readbyte=='+'){
 			//Brighter red led
 			P1OUT^=BIT6;//Toggle green LED
@@ -209,6 +211,14 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 			printPress(volts);
 			snewline();
 			snewline();
+#ifdef EASTER
+		}else if(readbyte=='d'){
+			snewline();
+                        sendbuf("\\...,^..^");
+                        snewline();
+                        sendbuf(" /\\ /\\  `");
+                        snewline();
+#endif
 		}else{
 			sendbuf("Unknown command");
 			snewline();
