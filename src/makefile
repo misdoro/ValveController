@@ -1,6 +1,6 @@
 # makfile configuration
 NAME            = main
-OBJECTS         = main.o
+OBJECTS         = main.o serio.o printf.o
 #CPU             = msp430g2452
 CPU             = msp430g2553
 
@@ -45,4 +45,4 @@ dist:
 FORCE:
 
 #project dependencies
-main.o: main.c 
+main.o: main.c

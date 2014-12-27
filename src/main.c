@@ -1,6 +1,7 @@
 #include "msp430g2553.h"
 #include "signal.h"
-#include "printf.c"
+#include "printf.h"
+#include "serio.h"
 
 #define  LED1                  BIT0
 #define  LED_DIR               P1DIR
@@ -29,43 +30,38 @@ long Vin_avg[8];
 unsigned int Vin_pos=0;
 long Vin_avg_sum;
 
+void ConfigureAdc(void);
+void ConfigurePeripherial(void);
 
-void sendint(long value);
 void sendbyte(char data);
-void sendbuf(char* text);
-void snewline();
-void printbits(unsigned int val,char nbits);
+
 void printPress(long mVolts);
 void ADCStart();
-
-void ConfigureAdc(void);
-
-void ConfigurePeripherial(void);
 
 int main(void){
 	WDTCTL = WDTPW + WDTHOLD;
  	BCSCTL1 = CALBC1_8MHZ;
 	DCOCTL = CALDCO_8MHZ;
-	
+
 	P1OUT |= BIT6;
 	ConfigureAdc();
-	
+
 	ConfigurePeripherial();
-	
+
 	eint();
-	
+
 	ontime=1000;
 	while(1){//Infinite loop, to replace by timer later.
 		//Red&Green Led blink
 		P1OUT ^= BIT0+BIT6;
-		
+
 		for (i=1;i<MAXON;i++){
 			//Software delay
 		}
 		ADCStart();//Initiate ADC conversion
 	}
-	
-	
+
+
 }
 
 void ADCStart(void){
@@ -89,35 +85,35 @@ void ConfigureAdc(void)
 
 void ConfigurePeripherial(void){//Configure ports and pins
 
-	P1OUT = BIT3+BIT6;//BIT6 for green LED, bit3 for button	
+	P1OUT = BIT3+BIT6;//BIT6 for green LED, bit3 for button
 	P1DIR = (BIT0+BIT6);//LED pins on P1 as outputs
 	P1REN=BIT3;//Pull up pin3 for the button
 	P1SEL = BIT1 + BIT2;//Enable UART on port 1
 	P1SEL2 = BIT1 + BIT2;//Enable UART on port 1
-	
+
 	P2DIR=(BIT0+BIT1+BIT3);//P2.0, P2.1, P2.3 as OUT
-	
+
 	P2REN=(BIT4+BIT5);//Enable pull R on pin4&pin5
 	P2OUT=(BIT4+BIT5);//Pull switch inputs to high
 	P2OUT|=BIT1;
-	
+
 	P2SEL=0;
 	P2SEL2=0;
-	
-	
+
+
 	UCA0CTL1 |= UCSSEL_2;
-	
-	//8mhz-9600	
+
+	//8mhz-9600
 	UCA0BR0 = 0x41;
-	UCA0BR1 = 0x03;	
+	UCA0BR1 = 0x03;
 	UCA0MCTL = 0x92;
-	
+
 	UCA0CTL1 &= ~UCSWRST;
-	
+
 	IE2 |= UCA0RXIE+UCA0TXIE;// Enable USCI_A0 RX interrupt
 };
 
-interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){	
+interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 	if (IFG2&UCA0RXIFG){//check interrupt flag
 		readbyte=UCA0RXBUF;//Clear interrupt by reading the byte
 		if (txlen>0)return;//Discard command if we are still sending data
@@ -136,7 +132,7 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 			ontime-=100;
 			if (ontime<=20)
 				ontime=20;
-			
+
 			sendbyte('-');
 			snewline();
 		}else if (readbyte=='i'){
@@ -181,10 +177,6 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 			printbits(P2SEL,6);
 		}else if (readbyte>='0' && readbyte<='8'){
 			P2OUT ^= BIT0<<(readbyte-'0');
-		}else if (readbyte=='g'){
-			sendbuf("int");
-			sendint(ontime);
-			snewline();
 		}else if (readbyte=='a'){
 			printbits(ADC10CTL1,16);
 			print_f("%u",Vtrig_pos);
@@ -197,11 +189,11 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 			print_f("%l",volts);
 			sendbuf("mV");
 			snewline();
-			
+
 			sendbuf("Ptrig: ");
 			printPress(volts);
 			snewline();
-			
+
 			sendbuf("Vin: ");
 			volts = (Vin_avg_sum * 10000) / 8192;
 			print_f("%l",volts);
@@ -226,18 +218,6 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 	}
 }
 
-void printbits(unsigned int portval,char numbit){
-	unsigned int bit=1;
-	unsigned int i;
-	for (i=0;i<numbit;i++){
-		if (portval&bit)
-			sendbyte('1');
-		else
-			sendbyte('0');
-		bit=bit<<1;
-	}
-	snewline();
-}
 
 void printPress(long mVolts){
 	long mVdm=mVolts/1000;
@@ -251,51 +231,29 @@ void printPress(long mVolts){
 	sendbuf("Torr");
 }
 
-void sendint(long value){
-	print_f("%l",value);
-}
-
-void snewline(){
-	sendbuf("\r\n");
-}
-
-void put_s(char *s) {
-	sendbuf(s);
-}
-
-void put_c(unsigned char c){
-	sendbyte(c);
-}
-
-void sendbuf(char* buf){
-	while(*buf!='\0'){
-		sendbyte(*buf++);
-	}
-}
-
 void sendbyte(char data){
 	dint();//Disable interrupts
-	if (txlen==0 && (IFG2&UCA0TXIFG)){
+	if (txlen==0 && (IFG2&UCA0TXIFG)){//Start sending directly if we have nothing in send buffer
 		UCA0TXBUF=data;
 		IE2 &= ~UCA0TXIE;
-	}else if (txlen<TXBUF_SIZE){
+	}else if (txlen<TXBUF_SIZE){//Put byte in the send buffer, if there is some place left.
 		volatile int nbpos=txpos+txlen;
 		nbpos &=(TXBUF_MASK);
 		txlen++;
 		txbuf[nbpos]=data;
-		IE2 |= UCA0TXIE;  
+		IE2 |= UCA0TXIE;
 	}
 	eint();//Enable interrupts
 }
 
 interrupt(USCIAB0TX_VECTOR) tx_interrupt(void){
 	if (IFG2&UCA0TXIFG){
-		if (txlen>0){
+		if (txlen>0){//Send byte if we have something to send
 			UCA0TXBUF=txbuf[txpos];
 			txpos++;
 			txpos&=(TXBUF_MASK);
 			txlen--;
-		}else{
+		}else{//Clear interrupt flag
 			IE2 &= ~UCA0TXIE;
 		}
 	}
@@ -303,7 +261,7 @@ interrupt(USCIAB0TX_VECTOR) tx_interrupt(void){
 
 interrupt (ADC10_VECTOR) ADC10_ISR(void)
 {
-	
+
 	if(Vtrig_pos<8){
 		Vtrig_avg[Vtrig_pos++]=ADC10MEM;
 		if (Vtrig_pos==8){//Switch ADC to A7 after the last Vtrig measurement
