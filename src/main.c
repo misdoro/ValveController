@@ -90,7 +90,7 @@ void ConfigureAdc(void)
 void ConfigureTimerA(void){
     CCTL0 = CCIE;                             // CCR0 interrupt enabled
     TACTL = TASSEL_2 + MC_1 + ID_3;           // SMCLK/8, upmode
-    CCR0 =  5000;
+    CCR0 =  3000;
 }
 
 void ConfigurePeripherial(void){//Configure ports and pins
