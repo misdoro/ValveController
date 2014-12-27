@@ -21,7 +21,7 @@
 #define  TXBUF_SIZE 64//Must be a power of 2
 #define  TXBUF_MASK TXBUF_SIZE-1
 
-unsigned long i,ii;
+
 volatile char flag = 0;
 volatile long ontime;
 unsigned char readbyte='0';
@@ -40,7 +40,7 @@ long Vin_avg_sum;
 
 void ConfigureAdc(void);
 void ConfigurePeripherial(void);
-
+void ConfigureTimerA(void);
 void sendbyte(char data);
 
 void printPress(long mVolts);
@@ -52,23 +52,21 @@ int main(void){
 	DCOCTL = CALDCO_8MHZ;
 
 	P1OUT |= LEDG;
+	ontime=0;
 	ConfigureAdc();
 
 	ConfigurePeripherial();
 
+	ConfigureTimerA();
+
 	eint();
 
-	ontime=1000;
-	while(1){//Infinite loop, to replace by timer later.
-		//Red&Green Led blink
-		P1OUT ^= LEDR+LEDG;
-
-		for (i=1;i<MAXON;i++){
-			//Software delay
-		}
-		ADCStart();//Initiate ADC conversion
-	}
-
+    //Go to sleep, everything works on timers and interrupts from now on.
+    //Plus, ADC has much less noise in this mode.
+    _BIS_SR(CPUOFF + GIE);
+    while(1){
+    P1OUT^=LEDR;//Red will bilnk faster if we will have sleep problems
+    };
 
 }
 
@@ -89,7 +87,11 @@ void ConfigureAdc(void)
 	ADC10AE0 |= BIT5+BIT7;//A5 and A7 enabled as analog inputs
 }
 
-
+void ConfigureTimerA(void){
+    CCTL0 = CCIE;                             // CCR0 interrupt enabled
+    TACTL = TASSEL_2 + MC_1 + ID_3;           // SMCLK/8, upmode
+    CCR0 =  5000;
+}
 
 void ConfigurePeripherial(void){//Configure ports and pins
 
@@ -108,7 +110,6 @@ void ConfigurePeripherial(void){//Configure ports and pins
 	P2SEL=0;
 	P2SEL2=0;
 
-
 	UCA0CTL1 |= UCSSEL_2;
 
 	//8mhz-9600
@@ -125,28 +126,13 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 	if (IFG2&UCA0RXIFG){//check interrupt flag
 		readbyte=UCA0RXBUF;//Clear interrupt by reading the byte
 		if (txlen>0)return;//Discard command if we are still sending data
-		if (readbyte=='+'){
-			//Brighter red led
-			P1OUT^=LEDG;//Toggle green LED
-			ontime+=100;
-			if (ontime>=3000)
-				ontime=3000;
-			sendbyte('+');
-			snewline();
-		}
-		else if (readbyte=='-'){
-			//Deemer red led
-			P1OUT^=LEDG;//Toggle green led
-			ontime-=100;
-			if (ontime<=20)
-				ontime=20;
-
-			sendbyte('-');
-			snewline();
-		}else if (readbyte=='i'){
+		if (readbyte=='i'){
 			//Print device name
 			sendbuf("ValveControl01");
 			snewline();
+		}else if (readbyte=='o'){
+            print_f("Ontime: %l",ontime);
+            snewline();
 		}else if (readbyte=='p'){
 			//Print port statuses
 			sendbuf("P1:");
@@ -192,24 +178,19 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 			print_f("%u",Vin_pos);
 			snewline();
 		}else if(readbyte=='v'){
-			sendbuf("Vtrig: ");
 			long volts = (Vtrig_avg_sum * 10000) / 8192;
-			print_f("%l",volts);
-			sendbuf("mV");
+			print_f("Vtr: %lmV",volts);
 			snewline();
 
-			sendbuf("Ptrig: ");
+			sendbuf("Ptr: ");
 			printPress(volts);
 			snewline();
 
-			sendbuf("Vin: ");
 			volts = (Vin_avg_sum * 10000) / 8192;
-			print_f("%l",volts);
-			sendbuf("mV");
+			print_f("Vin: %lmV",volts);
 			snewline();
 			sendbuf("Pin: ");
 			printPress(volts);
-			snewline();
 			snewline();
 #ifdef EASTER
 		}else if(readbyte=='d'){
@@ -254,6 +235,11 @@ void sendbyte(char data){
 	eint();//Enable interrupts
 }
 
+interrupt(TIMER0_A0_VECTOR) timera_interrupt(void){
+    P1OUT ^= LEDR+LEDG;
+    ADCStart();
+}
+
 interrupt(USCIAB0TX_VECTOR) tx_interrupt(void){
 	if (IFG2&UCA0TXIFG){
 		if (txlen>0){//Send byte if we have something to send
@@ -269,7 +255,7 @@ interrupt(USCIAB0TX_VECTOR) tx_interrupt(void){
 
 interrupt (ADC10_VECTOR) ADC10_ISR(void)
 {
-
+    int i;
 	if(Vtrig_pos<8){
 		Vtrig_avg[Vtrig_pos++]=ADC10MEM;
 		if (Vtrig_pos==8){//Select Vin channel after the last Vtrig measurement
@@ -292,5 +278,6 @@ interrupt (ADC10_VECTOR) ADC10_ISR(void)
 			Vtrig_avg_sum+=Vtrig_avg[i];
 			Vin_avg_sum+=Vin_avg[i];
 		}
+		ontime++;
 	}
 }
