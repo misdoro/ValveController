@@ -3,11 +3,19 @@
 #include "printf.h"
 #include "serio.h"
 
-#define  LED1                  BIT0
-#define  LED_DIR               P1DIR
-#define  LED_OUT               P1OUT
 #define  DEBUG  true
 #define  EASTER true
+
+#define     LEDR            BIT0
+#define     LEDG            BIT6
+#define     BUTTON          BIT3
+#define     ADC_IN_VTRIG    INCH_5
+#define     ADC_IN_VIN      INCH_7
+#define     SWOPEN          BIT4
+#define     SWCLOSED        BIT5
+#define     OUTCTL          BIT0
+#define     OUTRST          BIT1
+#define     OUTSET          BIT3
 
 #define  MAXON	3000
 #define  TXBUF_SIZE 64//Must be a power of 2
@@ -43,7 +51,7 @@ int main(void){
  	BCSCTL1 = CALBC1_8MHZ;
 	DCOCTL = CALDCO_8MHZ;
 
-	P1OUT |= BIT6;
+	P1OUT |= LEDG;
 	ConfigureAdc();
 
 	ConfigurePeripherial();
@@ -53,7 +61,7 @@ int main(void){
 	ontime=1000;
 	while(1){//Infinite loop, to replace by timer later.
 		//Red&Green Led blink
-		P1OUT ^= BIT0+BIT6;
+		P1OUT ^= LEDR+LEDG;
 
 		for (i=1;i<MAXON;i++){
 			//Software delay
@@ -71,7 +79,7 @@ void ADCStart(void){
 void ConfigureAdc(void)
 {
 	/* Configure ADC */
-	ADC10CTL1 = INCH_5 + ADC10DIV_3;//Start with input channel 5
+	ADC10CTL1 = ADC_IN_VTRIG + ADC10DIV_3;//Start with input channel 5
 	ADC10CTL0 = SREF_3 + ADC10SHT_3  + ADC10ON + ADC10IE;
 	//SREF3=buff_ext_vref+&vref-=GND
 	//ADC10sht_3 = longest retention time
@@ -85,17 +93,17 @@ void ConfigureAdc(void)
 
 void ConfigurePeripherial(void){//Configure ports and pins
 
-	P1OUT = BIT3+BIT6;//BIT6 for green LED, bit3 for button
-	P1DIR = (BIT0+BIT6);//LED pins on P1 as outputs
-	P1REN=BIT3;//Pull up pin3 for the button
+	P1OUT = BUTTON+LEDG;//BIT6 for green LED, bit3 for button
+	P1DIR = (LEDR+LEDG);//LED pins on P1 as outputs
+	P1REN = BUTTON;//Pull up pin3 for the button
 	P1SEL = BIT1 + BIT2;//Enable UART on port 1
 	P1SEL2 = BIT1 + BIT2;//Enable UART on port 1
 
-	P2DIR=(BIT0+BIT1+BIT3);//P2.0, P2.1, P2.3 as OUT
+	P2DIR=(OUTCTL+OUTRST+OUTSET);//P2.0, P2.1, P2.3 as OUT
 
-	P2REN=(BIT4+BIT5);//Enable pull R on pin4&pin5
-	P2OUT=(BIT4+BIT5);//Pull switch inputs to high
-	P2OUT|=BIT1;
+	P2REN=(SWOPEN+SWCLOSED);//Enable pull R on pin4&pin5
+	P2OUT=(SWOPEN+SWCLOSED);//Pull switch inputs to high
+	P2OUT|=OUTRST;
 
 	P2SEL=0;
 	P2SEL2=0;
@@ -119,7 +127,7 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 		if (txlen>0)return;//Discard command if we are still sending data
 		if (readbyte=='+'){
 			//Brighter red led
-			P1OUT^=BIT6;//Toggle green LED
+			P1OUT^=LEDG;//Toggle green LED
 			ontime+=100;
 			if (ontime>=3000)
 				ontime=3000;
@@ -128,7 +136,7 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 		}
 		else if (readbyte=='-'){
 			//Deemer red led
-			P1OUT^=BIT6;//Toggle green led
+			P1OUT^=LEDG;//Toggle green led
 			ontime-=100;
 			if (ontime<=20)
 				ontime=20;
@@ -264,18 +272,18 @@ interrupt (ADC10_VECTOR) ADC10_ISR(void)
 
 	if(Vtrig_pos<8){
 		Vtrig_avg[Vtrig_pos++]=ADC10MEM;
-		if (Vtrig_pos==8){//Switch ADC to A7 after the last Vtrig measurement
+		if (Vtrig_pos==8){//Select Vin channel after the last Vtrig measurement
 			ADC10CTL0 &= ~ENC;
-			ADC10CTL1 = INCH_7 + ADC10DIV_3;
+			ADC10CTL1 = ADC_IN_VIN + ADC10DIV_3;
 		}
 	}else if(Vin_pos<8){
 		Vin_avg[Vin_pos++]=ADC10MEM;
-		if (Vin_pos==8){//Switch ADC to A5 after the last Vin measurement
+		if (Vin_pos==8){//Select VTRIG channel after the last VIN measurement
 			ADC10CTL0 &= ~ENC;
-			ADC10CTL1 = INCH_5 + ADC10DIV_3;
+			ADC10CTL1 = ADC_IN_VTRIG + ADC10DIV_3;
 		}
 	}
-	if (Vin_pos>=8){
+	if (Vin_pos>=8){//Process result of the measurement cycle
 		Vtrig_pos=0;
 		Vin_pos=0;
 		Vtrig_avg_sum=0;
