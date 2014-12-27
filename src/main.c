@@ -3,9 +3,11 @@
 #include "printf.h"
 #include "serio.h"
 
-#define  DEBUG  true
-#define  EASTER true
+#undef      DEBUG
+//#define   DEBUG  true
+#define     EASTER true
 
+//Pin assignments
 #define     LEDR            BIT0
 #define     LEDG            BIT6
 #define     BUTTON          BIT3
@@ -17,13 +19,20 @@
 #define     OUTRST          BIT1
 #define     OUTSET          BIT3
 
-#define  MAXON	3000
+//User flash address, blocks start from 0x1040; 0x1080;0x10C0
+#define     SWTHRESH        (int*) 0x1082//Software-defined threshold
+
+//Buffer sizes
 #define  TXBUF_SIZE 64//Must be a power of 2
 #define  TXBUF_MASK TXBUF_SIZE-1
 
 
 volatile char flag = 0;
-volatile long ontime;
+#ifdef DEBUG
+volatile long adcticks;
+volatile long ta0ticks;
+volatile unsigned int ta1ticks;
+#endif // DEBUG
 unsigned char readbyte='0';
 volatile unsigned char txpos=0;
 volatile unsigned char txlen=0;
@@ -31,18 +40,21 @@ volatile char txbuf[TXBUF_SIZE];
 volatile int pos=0;
 
 //Voltage data
-long Vtrig_avg[8];
+unsigned int Vtrig_arr_vals[8];
 unsigned int Vtrig_pos=0;
-long Vtrig_avg_sum;
-long Vin_avg[8];
+unsigned int Vtrig_avg_sum;
+unsigned int Vin_arr_vals[8];
 unsigned int Vin_pos=0;
-long Vin_avg_sum;
+unsigned int Vin_avg_sum;
 
 void ConfigureAdc(void);
 void ConfigurePeripherial(void);
-void ConfigureTimerA(void);
+void ConfigureTimer1(void);
+void ConfigureTimer2(void);
+void StartTimer2(void);
 void sendbyte(char data);
 
+void printVoltData(long mVolts,char* prefix);
 void printPress(long mVolts);
 void ADCStart();
 
@@ -51,13 +63,17 @@ int main(void){
  	BCSCTL1 = CALBC1_8MHZ;
 	DCOCTL = CALDCO_8MHZ;
 
-	P1OUT |= LEDG;
-	ontime=0;
+#ifdef DEBUG
+	adcticks=0;
+	ta0ticks=0;
+	ta1ticks=0;
+#endif // DEBUG
 	ConfigureAdc();
 
 	ConfigurePeripherial();
 
-	ConfigureTimerA();
+	ConfigureTimer1();
+	ConfigureTimer2();
 
 	eint();
 
@@ -70,6 +86,32 @@ int main(void){
 
 }
 
+void FlashErase(int *addr){
+    dint();
+    while(BUSY & FCTL3);
+    FCTL1=FWKEY+ERASE;
+    FCTL2=FWKEY+FSSEL_3+FN3+FN0;
+    FCTL3=FWKEY;
+
+    *addr=0;
+
+    while(BUSY & FCTL3);
+    FCTL1=FWKEY;
+    FCTL3=FWKEY+LOCK;
+    eint();
+}
+
+void FlashWrite(int *addr, int data){
+    dint();
+    FCTL1=FWKEY+WRT;
+    FCTL2=FWKEY+FSSEL_3+FN3+FN0;
+    FCTL3=FWKEY;
+    *addr=data;
+    FCTL1=FWKEY;
+    FCTL3=FWKEY+LOCK;
+    eint();
+}
+
 void ADCStart(void){
 	ADC10CTL0 |= ENC + ADC10SC;               // Sampling and conversion start
 }
@@ -79,23 +121,34 @@ void ConfigureAdc(void)
 	/* Configure ADC */
 	ADC10CTL1 = ADC_IN_VTRIG + ADC10DIV_3;//Start with input channel 5
 	ADC10CTL0 = SREF_3 + ADC10SHT_3  + ADC10ON + ADC10IE;
-	//SREF3=buff_ext_vref+&vref-=GND
-	//ADC10sht_3 = longest retention time
-	//REFON=0 for external reference
-	//ADC10ON to enable ADC
-	//ADC10IE to enable interrupts
+	/**SREF3=buff_ext_vref+&vref-=GND
+	*ADC10sht_3 = longest retention time
+	*REFON=0 for external reference
+	*ADC10ON to enable ADC
+	*ADC10IE to enable interrupts*/
 	ADC10AE0 |= BIT5+BIT7;//A5 and A7 enabled as analog inputs
 }
 
-void ConfigureTimerA(void){
-    CCTL0 = CCIE;                             // CCR0 interrupt enabled
-    TACTL = TASSEL_2 + MC_1 + ID_3;           // SMCLK/8, upmode
-    CCR0 =  3000;
+void ConfigureTimer1(void){
+    TA0CCTL0 = CCIE;                            // CCR0 interrupt enabled
+    TA0CTL = TASSEL_2 + MC_1 + ID_3;            // SMCLK/8 (1MHz), upmode
+    TA0CCR0 =  1000;                            // 1000 = 1kHz
+}
+
+void StartTimer2(void){
+    TA1R=0;
+    TA1CTL|= MC_1;
+}
+
+void ConfigureTimer2(void){
+    TA1CCTL0 = CCIE;                            // CCR0 interrupt enabled
+    TA1CTL = TASSEL_2 + MC_0 + ID_3;            // SMCLK/8 (1MHz), upmode
+    TA1CCR0 =  100;                             // 100 = 10 kHz = 0.1 ms pulse width
 }
 
 void ConfigurePeripherial(void){//Configure ports and pins
 
-	P1OUT = BUTTON+LEDG;//BIT6 for green LED, bit3 for button
+	P1OUT = BUTTON;//BIT6 for green LED, bit3 for button
 	P1DIR = (LEDR+LEDG);//LED pins on P1 as outputs
 	P1REN = BUTTON;//Pull up pin3 for the button
 	P1SEL = BIT1 + BIT2;//Enable UART on port 1
@@ -122,6 +175,12 @@ void ConfigurePeripherial(void){//Configure ports and pins
 	IE2 |= UCA0RXIE+UCA0TXIE;// Enable USCI_A0 RX interrupt
 };
 
+void CloseValve(void){
+    P2OUT&=~(OUTRST+OUTCTL);
+    P1OUT|=LEDR;
+    StartTimer2();
+}
+
 interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 	if (IFG2&UCA0RXIFG){//check interrupt flag
 		readbyte=UCA0RXBUF;//Clear interrupt by reading the byte
@@ -129,18 +188,69 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 		if (readbyte=='i'){
 			//Print device name
 			sendbuf("ValveControl01");
-			snewline();
+		}else if (readbyte=='c'){
+            //Close the valve - cut the output
+            CloseValve();
+            sendbuf("OK");
 		}else if (readbyte=='o'){
-            print_f("Ontime: %l",ontime);
-            snewline();
+            //Open the valve - enable output
+            if (Vin_avg_sum<Vtrig_avg_sum && Vin_avg_sum<*SWTHRESH){
+                P1OUT|=LEDG;
+                P2OUT|=(OUTSET+OUTCTL);
+                StartTimer2();
+                sendbuf("OK");
+            }else{
+                P1OUT|=LEDR;
+                sendbuf("PERR");
+            }
 		}else if (readbyte=='p'){
-			//Print port statuses
-			sendbuf("P1:");
-			printbits(P1IN,8);
-			sendbuf("P2:");
-			printbits(P2IN,6);
-			sendbuf("End");
+			//Get the valve state
+            if (P2IN&SWOPEN && (P2IN&SWCLOSED)==0){//Zero at input means "activated"
+                sendbuf("CLOSED");
+            }else if((P2IN&SWOPEN)==0 && (P2IN&SWCLOSED)){
+                sendbuf("OPEN");
+            }else{
+                sendbuf("UNDEF");
+            }
+        }else if(readbyte=='v'){
+            //Print actual input voltage and corresponding pressure
+			long volts = (Vin_avg_sum * 10000L) / 8192;
+			print_f("Vin: %lmV",volts);
 			snewline();
+			sendbuf("Pin: ");
+			printPress(volts);
+        }else if(readbyte=='s'){
+            //Print software-defined threshold voltage and pressure
+			long volts = (*SWTHRESH * 10000L) / 8192;
+			print_f("Vst: %lmV",volts);
+			snewline();
+			sendbuf("Pst: ");
+			printPress(volts);
+        }else if(readbyte=='t'){
+            //Print hardware-defined threshold voltage and pressure
+			long volts = (Vtrig_avg_sum * 10000L) / 8192;
+			print_f("Vtr: %lmV",volts);
+			snewline();
+			sendbuf("Ptr: ");
+			printPress(volts);
+        #ifdef DEBUG
+        }else if (readbyte=='e'){
+            //Print timers:
+            print_f("ADC %n",adcticks);
+            snewline();
+            print_f("T0 %n",ta0ticks);
+            snewline();
+            print_f("T1 %u",ta1ticks);
+            snewline();
+            print_f("SWT %x",*SWTHRESH);
+        }else if (readbyte=='f'){
+            //Flash erase
+            FlashErase(SWTHRESH);
+            sendbuf("Erased");
+        }else if (readbyte=='g'){
+            //Flash write
+            FlashWrite(SWTHRESH,Vin_avg_sum);
+            print_f("Written %u",Vin_avg_sum);
 		}else if (readbyte=='q'){
 			//Print port statuses
 			sendbuf("P1:");
@@ -176,48 +286,33 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 			print_f("%u",Vtrig_pos);
 			snewline();
 			print_f("%u",Vin_pos);
-			snewline();
-		}else if(readbyte=='v'){
-			long volts = (Vtrig_avg_sum * 10000) / 8192;
-			print_f("Vtr: %lmV",volts);
-			snewline();
-
-			sendbuf("Ptr: ");
-			printPress(volts);
-			snewline();
-
-			volts = (Vin_avg_sum * 10000) / 8192;
-			print_f("Vin: %lmV",volts);
-			snewline();
-			sendbuf("Pin: ");
-			printPress(volts);
-			snewline();
+        #endif
 #ifdef EASTER
 		}else if(readbyte=='d'){
-			snewline();
                         sendbuf("\\...,^..^");
                         snewline();
                         sendbuf(" /\\ /\\  `");
-                        snewline();
 #endif
 		}else{
 			sendbuf("Unknown command");
-			snewline();
 		}
+		snewline();
 	}
 }
 
+void printVoltData(long mVolts, char* prefix){
+    long volts = (mVolts * 10000L) / 8192;
+	print_f("V%s: %lmV",prefix,volts);
+    snewline();
+    print_f("P%s: ",prefix);
+    printPress(volts);
+}
 
 void printPress(long mVolts){
 	long mVdm=mVolts/1000;
 	long pm=(mVolts-(mVdm)*1000+100);
 	long pmd=pm/110;
-	print_f("%l",pmd);
-	sendbyte('.');
-	print_f("%l",(pm-pmd*110)/11);
-	sendbyte('E');
-	print_f("%l",(mVdm)-11);
-	sendbuf("Torr");
+	print_f("%l.%lE%lTorr",pmd,(pm-pmd*110)/11,mVdm-11);
 }
 
 void sendbyte(char data){
@@ -235,9 +330,26 @@ void sendbyte(char data){
 	eint();//Enable interrupts
 }
 
+interrupt(TIMER1_A0_VECTOR) timerb_interrupt(void){
+    //As timer1 is used to generate pulses, set outputs to default values:
+    P2OUT|=OUTRST;
+    P2OUT&=~OUTSET;
+    P1OUT&=~(LEDG+LEDR);
+    //Disable and clear timer1
+    TA1CTL=TASSEL_2 + MC_0 + ID_3;
+    TA1R=0;
+    #ifdef DEBUG
+    ta1ticks++;
+    #endif // DEBUG
+}
+
 interrupt(TIMER0_A0_VECTOR) timera_interrupt(void){
-    P1OUT ^= LEDR+LEDG;
+    //Timer0 is used to initiate ADC
+    //P1OUT ^= LEDR;
     ADCStart();
+    #ifdef DEBUG
+    ta0ticks++;
+    #endif // DEBUG
 }
 
 interrupt(USCIAB0TX_VECTOR) tx_interrupt(void){
@@ -257,27 +369,34 @@ interrupt (ADC10_VECTOR) ADC10_ISR(void)
 {
     int i;
 	if(Vtrig_pos<8){
-		Vtrig_avg[Vtrig_pos++]=ADC10MEM;
+		Vtrig_arr_vals[Vtrig_pos++]=ADC10MEM;
 		if (Vtrig_pos==8){//Select Vin channel after the last Vtrig measurement
 			ADC10CTL0 &= ~ENC;
 			ADC10CTL1 = ADC_IN_VIN + ADC10DIV_3;
 		}
 	}else if(Vin_pos<8){
-		Vin_avg[Vin_pos++]=ADC10MEM;
+		Vin_arr_vals[Vin_pos++]=ADC10MEM;
 		if (Vin_pos==8){//Select VTRIG channel after the last VIN measurement
 			ADC10CTL0 &= ~ENC;
 			ADC10CTL1 = ADC_IN_VTRIG + ADC10DIV_3;
 		}
 	}
-	if (Vin_pos>=8){//Process result of the measurement cycle
+	if (Vin_pos>=8){
+        //Process result of the measurement cycle
 		Vtrig_pos=0;
 		Vin_pos=0;
 		Vtrig_avg_sum=0;
 		Vin_avg_sum=0;
 		for (i = 0; i < 8; i++){
-			Vtrig_avg_sum+=Vtrig_avg[i];
-			Vin_avg_sum+=Vin_avg[i];
+			Vtrig_avg_sum+=Vtrig_arr_vals[i];
+			Vin_avg_sum+=Vin_arr_vals[i];
 		}
-		ontime++;
+		//Once the result is ready, check software threshold
+		if (Vin_avg_sum>=*SWTHRESH){
+            CloseValve();
+		}
 	}
+	#ifdef DEBUG
+    adcticks++;
+    #endif // DEBUG
 }
