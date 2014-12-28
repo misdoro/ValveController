@@ -4,7 +4,7 @@
 #include "serio.h"
 
 #undef      DEBUG
-//#define   DEBUG  true
+#define   DEBUG  true
 #define     EASTER true
 
 //Pin assignments
@@ -20,7 +20,7 @@
 #define     OUTSET          BIT3
 
 //User flash address, blocks start from 0x1040; 0x1080;0x10C0
-#define     SWTHRESH        (int*) 0x1082//Software-defined threshold
+#define     SWTHRESH        (unsigned int*) 0x1082//Software-defined threshold
 
 //Buffer sizes
 #define  TXBUF_SIZE 64//Must be a power of 2
@@ -38,6 +38,7 @@ volatile unsigned char txpos=0;
 volatile unsigned char txlen=0;
 volatile char txbuf[TXBUF_SIZE];
 volatile int pos=0;
+volatile int FlashWriteTimer;
 
 //Voltage data
 unsigned int Vtrig_arr_vals[8];
@@ -54,7 +55,7 @@ void ConfigureTimer2(void);
 void StartTimer2(void);
 void sendbyte(char data);
 
-void printVoltData(long mVolts,char* prefix);
+void printVoltData(unsigned int mVolts,char* prefix);
 void printPress(long mVolts);
 void ADCStart();
 
@@ -86,7 +87,7 @@ int main(void){
 
 }
 
-void FlashErase(int *addr){
+void FlashErase(unsigned int *addr){
     dint();
     while(BUSY & FCTL3);
     FCTL1=FWKEY+ERASE;
@@ -101,7 +102,7 @@ void FlashErase(int *addr){
     eint();
 }
 
-void FlashWrite(int *addr, int data){
+void FlashWrite(unsigned int *addr,unsigned int data){
     dint();
     FCTL1=FWKEY+WRT;
     FCTL2=FWKEY+FSSEL_3+FN3+FN0;
@@ -137,6 +138,7 @@ void ConfigureTimer1(void){
 
 void StartTimer2(void){
     TA1R=0;
+    TA1CCR0 =  100;
     TA1CTL|= MC_1;
 }
 
@@ -148,11 +150,13 @@ void ConfigureTimer2(void){
 
 void ConfigurePeripherial(void){//Configure ports and pins
 
-	P1OUT = BUTTON;//BIT6 for green LED, bit3 for button
-	P1DIR = (LEDR+LEDG);//LED pins on P1 as outputs
-	P1REN = BUTTON;//Pull up pin3 for the button
-	P1SEL = BIT1 + BIT2;//Enable UART on port 1
-	P1SEL2 = BIT1 + BIT2;//Enable UART on port 1
+	P1OUT   = BUTTON;
+	P1DIR   = (LEDR+LEDG);//LED pins on P1 as outputs
+	P1REN   = BUTTON;//Pull up pin3 for the button
+	P1SEL   = BIT1 + BIT2;//Enable UART on port 1
+	P1SEL2  = BIT1 + BIT2;//Enable UART on port 1
+	P1IE    = BUTTON;
+	P1IES   = BUTTON;
 
 	P2DIR=(OUTCTL+OUTRST+OUTSET);//P2.0, P2.1, P2.3 as OUT
 
@@ -178,6 +182,7 @@ void ConfigurePeripherial(void){//Configure ports and pins
 void CloseValve(void){
     P2OUT&=~(OUTRST+OUTCTL);
     P1OUT|=LEDR;
+    ConfigureTimer2();
     StartTimer2();
 }
 
@@ -214,25 +219,13 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
             }
         }else if(readbyte=='v'){
             //Print actual input voltage and corresponding pressure
-			long volts = (Vin_avg_sum * 10000L) / 8192;
-			print_f("Vin: %lmV",volts);
-			snewline();
-			sendbuf("Pin: ");
-			printPress(volts);
+            printVoltData(Vin_avg_sum,"in");
         }else if(readbyte=='s'){
             //Print software-defined threshold voltage and pressure
-			long volts = (*SWTHRESH * 10000L) / 8192;
-			print_f("Vst: %lmV",volts);
-			snewline();
-			sendbuf("Pst: ");
-			printPress(volts);
+            printVoltData(*SWTHRESH,"st");
         }else if(readbyte=='t'){
             //Print hardware-defined threshold voltage and pressure
-			long volts = (Vtrig_avg_sum * 10000L) / 8192;
-			print_f("Vtr: %lmV",volts);
-			snewline();
-			sendbuf("Ptr: ");
-			printPress(volts);
+            printVoltData(Vtrig_avg_sum,"tr");
         #ifdef DEBUG
         }else if (readbyte=='e'){
             //Print timers:
@@ -282,10 +275,11 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 		}else if (readbyte>='0' && readbyte<='8'){
 			P2OUT ^= BIT0<<(readbyte-'0');
 		}else if (readbyte=='a'){
-			printbits(ADC10CTL1,16);
-			print_f("%u",Vtrig_pos);
+			print_f("in%u",Vin_avg_sum);
 			snewline();
-			print_f("%u",Vin_pos);
+			print_f("st%u",*SWTHRESH);
+			snewline();
+			print_f("ht%u",Vtrig_avg_sum);
         #endif
 #ifdef EASTER
 		}else if(readbyte=='d'){
@@ -300,7 +294,7 @@ interrupt(USCIAB0RX_VECTOR) rx_interrupt(void){
 	}
 }
 
-void printVoltData(long mVolts, char* prefix){
+void printVoltData(unsigned int mVolts, char* prefix){
     long volts = (mVolts * 10000L) / 8192;
 	print_f("V%s: %lmV",prefix,volts);
     snewline();
@@ -330,20 +324,56 @@ void sendbyte(char data){
 	eint();//Enable interrupts
 }
 
-interrupt(TIMER1_A0_VECTOR) timerb_interrupt(void){
+interrupt(PORT1_VECTOR) port1_interrupt(void){
+    //Port1 interrupt
+    if (P1IFG&BUTTON){
+        //Disable further interrupts from a button
+        P1IE &=~BUTTON;
+        P1IFG&=~BUTTON;
+
+        FlashErase(SWTHRESH);
+        FlashWriteTimer=0;
+        //Start timer
+        TA1CTL=TASSEL_2 + MC_1 + ID_3;
+        TA1R=0;
+        TA1CCR0 =  10000;
+    }
+}
+
+interrupt(TIMER1_A0_VECTOR) timer1_interrupt(void){
     //As timer1 is used to generate pulses, set outputs to default values:
     P2OUT|=OUTRST;
     P2OUT&=~OUTSET;
     P1OUT&=~(LEDG+LEDR);
-    //Disable and clear timer1
-    TA1CTL=TASSEL_2 + MC_0 + ID_3;
-    TA1R=0;
+    //Another use of timer1 is to wait for button release
+    if ((TA1CCR0 == 10000) && ((P1IN&BUTTON)==0)){
+        //If we waited long enough and the button is still pressed
+        TA1CTL=TASSEL_2 + MC_1 + ID_3;
+        TA1R=0;
+        TA1CCR0 =  10000;
+        FlashWriteTimer++;
+        if (FlashWriteTimer>1000){
+            P1OUT|=LEDG;
+        }else{
+            P1OUT|=LEDR;
+        }
+    }else{
+        if (FlashWriteTimer>1000){
+            FlashWrite(SWTHRESH,Vin_avg_sum);
+            FlashWriteTimer=0;
+        }
+        //re-enable button interrupts
+        P1IE|=BUTTON;
+        //Disable and clear timer1
+        TA1CTL=TASSEL_2 + MC_0 + ID_3;
+        TA1R=0;
+    }
     #ifdef DEBUG
     ta1ticks++;
     #endif // DEBUG
 }
 
-interrupt(TIMER0_A0_VECTOR) timera_interrupt(void){
+interrupt(TIMER0_A0_VECTOR) timer0_interrupt(void){
     //Timer0 is used to initiate ADC
     //P1OUT ^= LEDR;
     ADCStart();
